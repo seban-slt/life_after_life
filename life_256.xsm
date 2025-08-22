@@ -1,0 +1,190 @@
+record	equ	0
+
+; zero page variables
+
+frq	equ	$fa
+cnt	equ	$fb		; neighbors counter
+src	equ	$fc		; actual cell population pointer
+dst	equ	$fe		; new cell population pointer
+
+; os variables
+
+cdtmv3	equ	$21c
+setvbv	equ	$e45c
+
+; variables 
+
+buf1	equ	$bc40		; screen buffer #1 address
+buf2	equ	$ac40		; screen buffer #2 address
+
+gen_tm	equ	$300		; generation timeout
+
+	org	$4000		; location of code
+
+; program starts here
+
+main	ldx	#$1f
+	lda	#$00
+	sta	$22f
+	tay
+
+clr	sta	$a000,y
+	dey
+	bne	clr
+	inc	clr+2
+	dex
+	bpl	clr
+
+	lda	#$c0
+	sta	$6a
+	jsr	editor		; regs at ret: A=0, X=0, Y=1
+	stx	buf1+2		; clear out the cursor
+
+; init the sound
+
+	lda	#$0f
+	sta	$d201
+
+; at 1st generate of random cell population
+
+rgen	lda	#3		; select timer #3
+	sta	$d20f		; init the POKEY
+	ldy	<gen_tm
+	ldx	>gen_tm
+	jsr	setvbv
+
+	lda	$d20a		; random background color
+	and	#$f0
+	sta	$2c6
+	sta	$2c8
+
+	ldy	#2		; # of pages to process
+	ldx	#0
+
+s0	lda	$d20a		; get random value
+sr	and	#$03		; mask out (0-3 values now possible)
+	bne	*+7		; non zero? skip next instr.
+	lda	#$60
+s1	sta	buf1+41,x	; increment screen buffer (born of cell)
+	stx	$d200
+	sta	$d208
+	inx			; next cell
+	bne	s0		; do the loop
+	inc	s1+2		; next page
+	dey			; decr. page counter
+	bpl	s0		; negative? no, so do the loop
+
+	lda	#$07		; lower probability of generating live cell in all next passes
+	sta	sr+1
+
+	inx			; sound setup
+	stx	$d208
+	lda	#$80
+	sta	frq
+
+	lda	>buf1+41	; restore buffer adr.
+	sta	s1+2
+	lda	>buf2		; initial buffer setup
+	sta	xor+1
+
+; generation loop...
+
+; but at first we need to setup the buffers pointers
+
+ngen	lda	#<buf1		; init LO-Bytes of buffer pointers
+	sta	src
+	sta	dst
+xor	lda	#>buf2		; load HI-byte...
+	sta	dst+1		; and put it in dst pointer
+	eor	#$10		; some kind of dirty hack, the fast way of change to 2nd buffer address
+	sta	src+1		; set HI-byte of src pointer
+	sta	$bc25		; set also screen address in display list (double buffering, page filp, etc.)
+	sta	xor+1		; set the buffer value for next generation of cells (swap the buffers actual with previous)
+	clc			; clear carry
+	adc	#3		; add #3 for calculate end address of actual buffer
+	sta	xend+1		; save in code body below
+
+	lda	frq		; generate sound effects
+	sta	$d200
+	adc	#7
+	bcs	*+4
+	sta	frq
+
+; neighbors counting loop
+
+loop	ldx	#7		; load neighbors counter loop
+	lda	#0		; clear the cell counter
+        sta	cnt
+
+c0	ldy	idx,x		; get cell index/offset from LUT table
+	lda	(src),y		; check the presence of cell (value greater then 0 means live cell)
+	beq	c1		; no cell here, so skip to c1
+	inc	cnt		; cell present, increment cell counter
+c1	dex			; decrement loop counter
+	bpl	c0		; X is negative (end of loop)
+	ldx	cnt		; load neighbors count to X reg.
+
+	ldy	#41		; set current cell position
+	lda	(src),y		; load current call value 
+	bne	cell		; cell is alive, go to next checks
+	cpx	#3		; cell is empty, check if new cell will be born?
+	beq	live		; yes! 3 neighbors, so born new cell!
+	bne	dead		; in other cases treat cell as dead.
+cell	cpx	#2		; live cell, check for 2 neighbors
+	bcc	dead		; ...if less then dead from loneliness
+	cpx	#4		; then check for 4 neighbors
+	bcs	dead		; ...if 4 or more then dead from overpopulation
+live	lda	#$54		; in other cases cell stay alive!
+	dta	$2c		; BIT $xxxx mnemonic value (used to skip next 2 bytes, LDA #0 instruction in this case)
+dead	lda	#$00		; dead cell value
+
+	sta	(dst),y		; store in destination buffer
+
+	inc	dst+0		; increment src and dst pointers
+	inc	src+0
+	bne	*+6
+	inc	src+1
+	inc	dst+1
+	
+	lda	src+0		; check for src buffer for end of processing value
+	cmp	#$b0		; LO-byte
+	lda	src+1
+xend	sbc	#$bf		; HI-byte
+	bcc	loop		; if scr pointer < end of buffer, do the loop
+
+	lda	cdtmv3+1
+	bne	ngen
+	
+	jmp	rgen
+
+editor	ldx	#2
+	jsr	edt
+	ldx	#0
+edt	lda	$e401,x
+	pha
+	lda	$e400,x
+	pha
+	rts
+
+; neighbors index/offset table
+
+idx	dta	0,1,2,40,42,80,81,82
+
+	dta	c"SI"
+	
+	ift	record
+
+w_rec	lda	#$00
+	sta	$22f
+
+	lda	#$04
+	bit	$d20f
+	bne	*-3
+
+	jmp	main
+
+	run	w_rec
+
+	eif
+
+	end
